@@ -1,0 +1,7 @@
+build/
+build-*/
+*.pro.user
+*.user
+Makefile
+*.o
+moc_*
