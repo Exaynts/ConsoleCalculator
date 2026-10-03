@@ -1,7 +1,10 @@
 #include <QCoreApplication>
 #include <QTextStream>
 #include <QStringList>
+#include <QSettings>
+#include <QFile> // <-- Добавили для работы с файлами
 #include "calculator.h"
+
 // Функция для вывода справки по командам
 void printHelp(QTextStream& out) {
     out << "Доступные команды:\n";
@@ -9,89 +12,147 @@ void printHelp(QTextStream& out) {
     out << " sub <a> <b> - вычитание\n";
     out << " mul <a> <b> - умножение\n";
     out << " div <a> <b> - деление\n";
+    out << " prec <n>    - установить точность (кол-во знаков после запятой)\n";
     out << " reset - сброс\n";
     out << " help - эта справка\n";
     out << " quit - выход\n";
 }
+
 int main(int argc, char* argv[]) {
-    // QCoreApplication вместо QApplication - для консольного приложения
     QCoreApplication app(argc, argv);
-    // Потоки ввода/вывода (кроссплатформенные, поддерживают Unicode)
+
+    // Настройки для QSettings
+    QCoreApplication::setOrganizationName("Lab1Org");
+    QCoreApplication::setApplicationName("ConsoleCalculator");
+
+    // Читаем точность из настроек (по умолчанию 2 знака)
+    QSettings settings;
+    int precision = settings.value("precision", 2).toInt();
+
+    // Потоки ввода/вывода
     QTextStream in(stdin);
     QTextStream out(stdout);
-    // Создаём калькулятор (родитель не нужен - живёт до конца программы)
+
+    // Применяем настройки точности
+    out.setRealNumberNotation(QTextStream::FixedNotation);
+    out.setRealNumberPrecision(precision);
+
     Calculator calc;
-    // СОЕДИНЕНИЯ: связываем сигналы калькулятора с лямбда-обработчиками
-    // 1. При успешном вычислении - выводим результат
+
+    // --- ШАГ 7: Настройка записи в файл истории ---
+    QFile historyFile("history.txt");
+    // Открываем файл для записи и добавления в конец (Append)
+    if (!historyFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+        out << "Предупреждение: Не удалось открыть history.txt для записи.\n";
+    }
+    QTextStream historyStream(&historyFile);
+
+    // СОЕДИНЕНИЯ
+
+    // 1. Вывод результата в консоль (уже было)
     QObject::connect(&calc, &Calculator::resultReady,
                      [&out](double result) {
                          out << "Результат: " << result << "\n";
                          out.flush();
                      });
-    // 2. При ошибке - выводим сообщение об ошибке
+
+    // 2. ШАГ 7: Запись результата в файл истории (новый обработчик)
+    QObject::connect(&calc, &Calculator::resultReady,
+                     [&historyStream](double result) {
+                         historyStream << "Result: " << result << "\n";
+                         historyStream.flush();
+                     });
+
+    // 3. Вывод ошибок в консоль
     QObject::connect(&calc, &Calculator::errorOccurred,
                      [&out](const QString& msg) {
                          out << "Ошибка: " << msg << "\n";
                          out.flush();
                      });
+
     // Приветствие
     out << "=== Консольный калькулятор на Qt ===\n";
+    out << "Текущая точность: " << precision << " знаков после запятой.\n";
     printHelp(out);
-    out << "\n> ";out.flush();
-    // Основной цикл: читаем строки, парсим, вызываем слоты
+    out << "\n> ";
+    out.flush();
+
     QString line;
     while (in.readLineInto(&line)) {
-        line = line.trimmed(); // Убираем пробелы по краям
-        // Пустая строка - просто продолжаем
+        line = line.trimmed();
         if (line.isEmpty()) {
             out << "> ";
             out.flush();
             continue;
         }
-        // Разбиваем строку на токены по пробелам
+
         QStringList parts = line.split(' ', Qt::SkipEmptyParts);
         QString command = parts.value(0).toLower();
-        // Обработка команд выхода
+
         if (command == "quit" || command == "exit") {
             out << "До свидания!\n";
             break;
         }
-        // Справка
+
         if (command == "help") {
             printHelp(out);
             out << "> ";
             out.flush();
             continue;
         }
-        // Сброс
+
         if (command == "reset") {
             calc.reset();
             out << "> ";
             out.flush();
             continue;
         }
-        // Арифметические команды требуют 3 токена: команда + 2 числа
+
+        // Обработка команды точности
+        if (command == "prec") {
+            if (parts.size() != 2) {
+                out << "Ошибка: используйте 'prec <число>'\n";
+            } else {
+                bool ok;
+                int newPrec = parts[1].toInt(&ok);
+                if (ok && newPrec >= 0 && newPrec <= 15) {
+                    precision = newPrec;
+                    out.setRealNumberPrecision(precision);
+                    settings.setValue("precision", precision);
+                    out << "Точность изменена на " << precision << " знаков.\n";
+                } else {
+                    out << "Ошибка: неверное значение точности (допустимо от 0 до 15)\n";
+                }
+            }
+            out << "> ";
+            out.flush();
+            continue;
+        }
+
+        // Арифметические команды
         if (parts.size() != 3) {
             out << "Ошибка: неверный формат. Используйте: <команда> <a> <b>\n";
             out << "> ";
             out.flush();
             continue;
         }
-        // Преобразуем операнды в числа
+
         bool ok1, ok2;
         double a = parts[1].toDouble(&ok1);
         double b = parts[2].toDouble(&ok2);
+
         if (!ok1 || !ok2) {
             out << "Ошибка: не удалось преобразовать операнды в числа\n";
             out << "> ";
             out.flush();
             continue;
         }
-        // Вызываем нужный слот (обычный вызов метода - сигнал излучится внутри)
+
         if (command == "add") {
             calc.add(a, b);
         }
-        else if (command == "sub") {calc.subtract(a, b);
+        else if (command == "sub") {
+            calc.subtract(a, b);
         }
         else if (command == "mul") {
             calc.multiply(a, b);
@@ -105,8 +166,9 @@ int main(int argc, char* argv[]) {
         out << "> ";
         out.flush();
     }
-    // QCoreApplication::exec() здесь не нужен:
-    // мы работаем в блокирующем режиме чтения, а не через цикл событий.
-    // Но если бы использовали QTimer или сеть - обязательно вызвали бы app.exec().
+
+    // Закрываем файл истории перед выходом
+    historyFile.close();
+
     return 0;
 }
